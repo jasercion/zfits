@@ -1,11 +1,10 @@
+//! A small, dependency-free FITS HDU reader and editor.
+//! FITS files are made of 80-byte header cards grouped into 2880-byte blocks,
+//! followed by a data area padded to a 2880-byte boundary. This module keeps
+//! header cards in their logical form, while retaining arbitrary cards and
+//! comments that it does not interpret.
 const std = @import("std");
 
-/// A small, dependency-free FITS primary-HDU editor.
-///
-/// FITS files are made of 80-byte header cards grouped into 2880-byte blocks,
-/// followed by a data area padded to a 2880-byte boundary. This module keeps
-/// header cards in their logical form, while retaining arbitrary cards and
-/// comments that it does not interpret.
 pub const FitsError = error{
     InvalidFits,
     InvalidCard,
@@ -22,6 +21,7 @@ pub const Card = struct {
     comment: ?[]u8,
     allocator: std.mem.Allocator,
 
+    /// Release the card's keyword, value, and comment storage.
     pub fn deinit(self: *Card) void {
         self.allocator.free(self.keyword);
         if (self.value) |value| self.allocator.free(value);
@@ -34,6 +34,7 @@ pub const Fits = struct {
     cards: std.ArrayList(Card),
     data: std.ArrayList(u8),
 
+    /// Create an empty HDU using `allocator` for all owned storage.
     pub fn init(allocator: std.mem.Allocator) Fits {
         return .{
             .allocator = allocator,
@@ -42,6 +43,7 @@ pub const Fits = struct {
         };
     }
 
+    /// Release all cards and data owned by this HDU.
     pub fn deinit(self: *Fits) void {
         for (self.cards.items) |*card| card.deinit();
         self.cards.deinit(self.allocator);
@@ -70,6 +72,7 @@ pub const Fits = struct {
         return error.InvalidFits;
     }
 
+    /// Read and parse the primary HDU from a file path.
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !Fits {
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -78,6 +81,7 @@ pub const Fits = struct {
         return parse(allocator, bytes);
     }
 
+    /// Read and parse the HDU at `index` from a file path.
     pub fn loadExtension(allocator: std.mem.Allocator, path: []const u8, index: usize) !Fits {
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -86,6 +90,7 @@ pub const Fits = struct {
         return parseExtension(allocator, bytes, index);
     }
 
+    /// Write this HDU as a complete, standalone FITS file.
     pub fn save(self: *const Fits, path: []const u8) !void {
         const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
         defer file.close();
@@ -114,10 +119,12 @@ pub const Fits = struct {
         try output.writeAll(original[bounds.end..]);
     }
 
+    /// Alias for `saveExtension`.
     pub fn writeExtension(self: *const Fits, path: []const u8, index: usize) !void {
         return self.saveExtension(path, index);
     }
 
+    /// Write this HDU to a writer as a complete FITS HDU.
     pub fn write(self: *const Fits, writer: anytype) !void {
         var header: std.ArrayList(u8) = .{ .items = &.{}, .capacity = 0 };
         defer header.deinit(self.allocator);
@@ -131,16 +138,19 @@ pub const Fits = struct {
         return null;
     }
 
+    /// Return the raw value field for the first matching keyword.
     pub fn getString(self: *const Fits, keyword: []const u8) ?[]const u8 {
         const card = self.getCard(keyword) orelse return null;
         return card.value;
     }
 
+    /// Parse the raw value field as an integer, if the keyword exists.
     pub fn getInt(self: *const Fits, comptime T: type, keyword: []const u8) !?T {
         const text = self.getString(keyword) orelse return null;
         return std.fmt.parseInt(T, std.mem.trim(u8, text, " \t"), 10) catch error.InvalidValue;
     }
 
+    /// Parse the raw value field as a floating-point number, if it exists.
     pub fn getFloat(self: *const Fits, comptime T: type, keyword: []const u8) !?T {
         const text = self.getString(keyword) orelse return null;
         return std.fmt.parseFloat(T, std.mem.trim(u8, text, " \t")) catch error.InvalidValue;
@@ -166,18 +176,21 @@ pub const Fits = struct {
         try self.cards.append(self.allocator, .{ .keyword = new_keyword, .value = new_value, .comment = new_comment, .allocator = self.allocator });
     }
 
+    /// Format an integer and insert or replace a keyword.
     pub fn setInt(self: *Fits, keyword: []const u8, value: anytype, comment: ?[]const u8) !void {
         var buffer: [64]u8 = undefined;
         const text = try std.fmt.bufPrint(&buffer, "{}", .{value});
         return self.set(keyword, text, comment);
     }
 
+    /// Format a floating-point value and insert or replace a keyword.
     pub fn setFloat(self: *Fits, keyword: []const u8, value: anytype, comment: ?[]const u8) !void {
         var buffer: [64]u8 = undefined;
         const text = try std.fmt.bufPrint(&buffer, "{d}", .{value});
         return self.set(keyword, text, comment);
     }
 
+    /// Remove the first card with `keyword`, returning whether one was found.
     pub fn remove(self: *Fits, keyword: []const u8) bool {
         for (self.cards.items, 0..) |*card, i| {
             if (std.ascii.eqlIgnoreCase(card.keyword, keyword)) {
@@ -189,11 +202,13 @@ pub const Fits = struct {
         return false;
     }
 
+    /// Replace the unpadded data payload for this HDU.
     pub fn setData(self: *Fits, bytes: []const u8) !void {
         self.data.clearRetainingCapacity();
         try self.data.appendSlice(self.allocator, bytes);
     }
 
+    /// Return the unpadded data payload owned by this HDU.
     pub fn dataBytes(self: *const Fits) []const u8 {
         return self.data.items;
     }
